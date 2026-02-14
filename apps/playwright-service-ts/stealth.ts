@@ -131,5 +131,20 @@ export function getStealthLaunchArgs(): string[] {
     '--disable-infobars',
     '--window-size=1920,1080',
     '--start-maximized',
+    // Memory optimization args
+    '--renderer-process-limit=4',
+    '--js-flags=--max-old-space-size=256',
+    '--disable-extensions',
+    '--disable-background-networking',
+    '--disable-default-apps',
+    '--disable-sync',
+    '--disable-translate',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-ipc-flooding-protection',
+    '--disable-hang-monitor',
+    '--metrics-recording-only',
+    '--mute-audio',
   ];
 }

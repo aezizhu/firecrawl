@@ -41,6 +41,8 @@ export async function searxng_search(
     const response = await axios.get(finalUrl, {
       headers: {
         "Content-Type": "application/json",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Real-IP": "127.0.0.1",
       },
       params: params,
     });

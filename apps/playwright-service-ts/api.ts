@@ -13,10 +13,14 @@ app.use(express.json());
 
 const BLOCK_MEDIA = (process.env.BLOCK_MEDIA || 'False').toUpperCase() === 'TRUE';
 const MAX_CONCURRENT_PAGES = Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? '10', 10) || 10);
+const CONTEXT_POOL_SIZE = Math.max(1, Number.parseInt(process.env.CONTEXT_POOL_SIZE ?? '4', 10) || 4);
+const CONTEXT_RECYCLE_AFTER = Number.parseInt(process.env.CONTEXT_RECYCLE_AFTER ?? '50', 10) || 50;
+const MEMORY_LIMIT_MB = Number.parseInt(process.env.MEMORY_LIMIT_MB ?? '1800', 10) || 1800;
 
 const PROXY_SERVER = process.env.PROXY_SERVER;
 const PROXY_USERNAME = process.env.PROXY_USERNAME;
 const PROXY_PASSWORD = process.env.PROXY_PASSWORD;
+const STEALTH_ENABLED = (process.env.STEALTH_ENABLED || 'True').toUpperCase() === 'TRUE';
 
 class Semaphore {
   private permits: number;
@@ -71,10 +75,25 @@ const AD_SERVING_DOMAINS = [
   'ads-twitter.com',
   'facebook.net',
   'fbcdn.net',
-  'amazon-adsystem.com'
+  'amazon-adsystem.com',
+  'hotjar.com',
+  'clarity.ms',
+  'segment.io',
+  'segment.com',
+  'mixpanel.com',
+  'amplitude.com',
+  'sentry.io',
+  'newrelic.com',
+  'optimizely.com',
+  'crazyegg.com',
+  'fullstory.com',
 ];
 
-const STEALTH_ENABLED = (process.env.STEALTH_ENABLED || 'True').toUpperCase() === 'TRUE';
+const BLOCKED_RESOURCE_TYPES = [
+  'image',
+  'media',
+  'font',
+];
 
 interface UrlModel {
   url: string;
@@ -85,26 +104,57 @@ interface UrlModel {
   skip_tls_verification?: boolean;
 }
 
-let browser: Browser;
+// --- Context Pool ---
+interface PooledContext {
+  context: BrowserContext;
+  useCount: number;
+  createdAt: number;
+}
 
-const initializeBrowser = async () => {
-  browser = await chromium.launch({
-    headless: true,
-    args: STEALTH_ENABLED ? getStealthLaunchArgs() : [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu',
-    ],
-  });
+let browser: Browser;
+let contextPool: PooledContext[] = [];
+let contextRoundRobin = 0;
+let isShuttingDown = false;
+let totalScrapes = 0;
+let failedScrapes = 0;
+
+const getMemoryUsageMB = (): number => {
+  const usage = process.memoryUsage();
+  return Math.round(usage.rss / 1024 / 1024);
 };
 
-const createContext = async (skipTlsVerification: boolean = false) => {
+const initializeBrowser = async () => {
+  const args = STEALTH_ENABLED ? getStealthLaunchArgs() : [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--disable-gpu',
+  ];
+
+  browser = await chromium.launch({
+    headless: true,
+    args,
+  });
+
+  // Pre-create context pool
+  await initContextPool();
+  console.log(`Browser initialized with ${CONTEXT_POOL_SIZE} pooled contexts, max ${MAX_CONCURRENT_PAGES} concurrent pages`);
+};
+
+const initContextPool = async () => {
+  contextPool = [];
+  for (let i = 0; i < CONTEXT_POOL_SIZE; i++) {
+    const ctx = await createPooledContext();
+    contextPool.push(ctx);
+  }
+};
+
+const createPooledContext = async (): Promise<PooledContext> => {
   const contextOptions: any = {
-    ignoreHTTPSErrors: skipTlsVerification,
+    ignoreHTTPSErrors: true,
   };
 
   if (PROXY_SERVER) {
@@ -115,37 +165,84 @@ const createContext = async (skipTlsVerification: boolean = false) => {
     };
   }
 
-  const newContext = await browser.newContext(contextOptions);
+  const context = await browser.newContext(contextOptions);
 
-  // Apply stealth evasion scripts to the context
   if (STEALTH_ENABLED) {
-    await applyStealthScripts(newContext);
+    await applyStealthScripts(context);
   }
 
-  if (BLOCK_MEDIA) {
-    await newContext.route('**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}', async (route: Route, request: PlaywrightRequest) => {
-      await route.abort();
-    });
-  }
+  // Block ads and trackers
+  await context.route('**/*', (route: Route, request: PlaywrightRequest) => {
+    const resourceType = request.resourceType();
 
-  // Intercept all requests to avoid loading ads
-  await newContext.route('**/*', (route: Route, request: PlaywrightRequest) => {
-    const requestUrl = new URL(request.url());
-    const hostname = requestUrl.hostname;
-
-    if (AD_SERVING_DOMAINS.some(domain => hostname.includes(domain))) {
-      console.log(hostname);
+    // Block heavy resource types (images, media, fonts)
+    if (BLOCKED_RESOURCE_TYPES.includes(resourceType)) {
       return route.abort();
     }
+
+    // Block ad/tracking domains
+    try {
+      const requestUrl = new URL(request.url());
+      const hostname = requestUrl.hostname;
+      if (AD_SERVING_DOMAINS.some(domain => hostname.includes(domain))) {
+        return route.abort();
+      }
+    } catch (_) {}
+
     return route.continue();
   });
 
-  return newContext;
+  return {
+    context,
+    useCount: 0,
+    createdAt: Date.now(),
+  };
+};
+
+const getContext = async (): Promise<PooledContext> => {
+  // Round-robin across pool
+  const idx = contextRoundRobin % contextPool.length;
+  contextRoundRobin++;
+
+  let pooled = contextPool[idx];
+
+  // Recycle if used too many times
+  if (pooled.useCount >= CONTEXT_RECYCLE_AFTER) {
+    try {
+      await pooled.context.close();
+    } catch (_) {}
+    pooled = await createPooledContext();
+    contextPool[idx] = pooled;
+  }
+
+  pooled.useCount++;
+  return pooled;
+};
+
+const recycleBrowserIfNeeded = async () => {
+  const memMB = getMemoryUsageMB();
+  if (memMB > MEMORY_LIMIT_MB) {
+    console.warn(`Memory usage ${memMB}MB exceeds limit ${MEMORY_LIMIT_MB}MB, recycling browser...`);
+    try {
+      for (const p of contextPool) {
+        try { await p.context.close(); } catch (_) {}
+      }
+      contextPool = [];
+      await browser.close();
+    } catch (_) {}
+    await initializeBrowser();
+    console.log(`Browser recycled. Memory now: ${getMemoryUsageMB()}MB`);
+  }
 };
 
 const shutdownBrowser = async () => {
+  isShuttingDown = true;
+  for (const p of contextPool) {
+    try { await p.context.close(); } catch (_) {}
+  }
+  contextPool = [];
   if (browser) {
-    await browser.close();
+    try { await browser.close(); } catch (_) {}
   }
 };
 
@@ -180,7 +277,7 @@ const scrapePage = async (page: Page, url: string, waitUntil: 'load' | 'networki
     headers = await response.allHeaders();
     ct = Object.entries(headers).find(([key]) => key.toLowerCase() === "content-type")?.[1];
     if (ct && (ct.toLowerCase().includes("application/json") || ct.toLowerCase().includes("text/plain"))) {
-      content = (await response.body()).toString("utf8"); // TODO: determine real encoding
+      content = (await response.body()).toString("utf8");
     }
   }
 
@@ -198,15 +295,18 @@ app.get('/health', async (req: Request, res: Response) => {
       await initializeBrowser();
     }
 
-    const testContext = await createContext();
-    const testPage = await testContext.newPage();
-    await testPage.close();
-    await testContext.close();
+    const memMB = getMemoryUsageMB();
 
     res.status(200).json({
       status: 'healthy',
       maxConcurrentPages: MAX_CONCURRENT_PAGES,
       activePages: MAX_CONCURRENT_PAGES - pageSemaphore.getAvailablePermits(),
+      queuedRequests: pageSemaphore.getQueueLength(),
+      contextPoolSize: contextPool.length,
+      memoryMB: memMB,
+      memoryLimitMB: MEMORY_LIMIT_MB,
+      totalScrapes,
+      failedScrapes,
     });
   } catch (error) {
     console.error('Health check failed:', error);
@@ -218,6 +318,10 @@ app.get('/health', async (req: Request, res: Response) => {
 });
 
 app.post('/scrape', async (req: Request, res: Response) => {
+  if (isShuttingDown) {
+    return res.status(503).json({ error: 'Service is shutting down' });
+  }
+
   const { url, wait_after_load = 0, timeout = 15000, headers, check_selector, skip_tls_verification = false }: UrlModel = req.body;
 
   console.log(`================= Scrape Request =================`);
@@ -227,6 +331,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
   console.log(`Headers: ${headers ? JSON.stringify(headers) : 'None'}`);
   console.log(`Check Selector: ${check_selector ? check_selector : 'None'}`);
   console.log(`Skip TLS Verification: ${skip_tls_verification}`);
+  console.log(`Active: ${MAX_CONCURRENT_PAGES - pageSemaphore.getAvailablePermits()}/${MAX_CONCURRENT_PAGES} | Queue: ${pageSemaphore.getQueueLength()} | Mem: ${getMemoryUsageMB()}MB`);
   console.log(`==================================================`);
 
   if (!url) {
@@ -242,13 +347,13 @@ app.post('/scrape', async (req: Request, res: Response) => {
   }
 
   await pageSemaphore.acquire();
+  totalScrapes++;
 
   let page: Page | null = null;
-  let requestContext: BrowserContext | null = null;
 
   try {
-    requestContext = await createContext(skip_tls_verification);
-    page = await requestContext.newPage();
+    const pooled = await getContext();
+    page = await pooled.context.newPage();
 
     if (headers) {
       await page.setExtraHTTPHeaders(headers);
@@ -270,26 +375,47 @@ app.post('/scrape', async (req: Request, res: Response) => {
       ...(pageError && { pageError })
     });
   } catch (error) {
+    failedScrapes++;
     console.error('Scrape error:', error);
     res.status(500).json({ error: 'An error occurred while fetching the page.' });
   } finally {
-    if (page) await page.close();
-    if (requestContext) await requestContext.close();
+    if (page) {
+      try { await page.close(); } catch (_) {}
+    }
     pageSemaphore.release();
+
+    // Check memory after every 10 scrapes
+    if (totalScrapes % 10 === 0) {
+      recycleBrowserIfNeeded().catch(err =>
+        console.error('Error during browser recycle:', err)
+      );
+    }
   }
 });
 
 app.listen(port, () => {
   initializeBrowser().then(() => {
     console.log(`Server is running on port ${port}`);
+    console.log(`Config: MAX_CONCURRENT_PAGES=${MAX_CONCURRENT_PAGES}, CONTEXT_POOL_SIZE=${CONTEXT_POOL_SIZE}, CONTEXT_RECYCLE_AFTER=${CONTEXT_RECYCLE_AFTER}, MEMORY_LIMIT_MB=${MEMORY_LIMIT_MB}`);
+    console.log(`Memory: ${getMemoryUsageMB()}MB`);
   });
 });
 
-if (require.main === module) {
-  process.on('SIGINT', () => {
-    shutdownBrowser().then(() => {
-      console.log('Browser closed');
-      process.exit(0);
-    });
-  });
-}
+// Graceful shutdown
+const gracefulShutdown = async (signal: string) => {
+  console.log(`Received ${signal}, shutting down gracefully...`);
+  isShuttingDown = true;
+
+  // Wait for in-flight requests (up to 30 seconds)
+  const start = Date.now();
+  while (pageSemaphore.getAvailablePermits() < MAX_CONCURRENT_PAGES && Date.now() - start < 30000) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
+  await shutdownBrowser();
+  console.log('Browser closed, exiting.');
+  process.exit(0);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

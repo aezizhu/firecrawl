@@ -15,6 +15,7 @@ RUN npm run build
 
 ARG PORT
 ENV PORT=${PORT}
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 
 EXPOSE ${PORT}
 

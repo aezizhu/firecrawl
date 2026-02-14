@@ -1,6 +1,20 @@
 // Convenience URL rewrites, "fake redirects" in essence.
 // Used to rewrite commonly used non-scrapable URLs to their scrapable equivalents.
 export function rewriteUrl(url: string): string | undefined {
+  // Reddit: rewrite www/new reddit to old.reddit.com (server-rendered, no anti-bot)
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.hostname === "www.reddit.com" ||
+      parsed.hostname === "reddit.com" ||
+      parsed.hostname === "new.reddit.com" ||
+      parsed.hostname === "sh.reddit.com"
+    ) {
+      parsed.hostname = "old.reddit.com";
+      return parsed.toString();
+    }
+  } catch (_) {}
+
   if (
     url.startsWith("https://docs.google.com/document/d/") ||
     url.startsWith("http://docs.google.com/document/d/")
