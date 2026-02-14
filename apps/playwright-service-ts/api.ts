@@ -1,8 +1,8 @@
 import express, { Request, Response } from 'express';
-import { chromium, Browser, BrowserContext, Route, Request as PlaywrightRequest, Page } from 'playwright';
+import { chromium, Browser, BrowserContext, Route, Request as PlaywrightRequest, Page } from 'patchright';
 import dotenv from 'dotenv';
-import UserAgent from 'user-agents';
 import { getError } from './helpers/get_error';
+import { applyStealthScripts, getStealthLaunchArgs } from './stealth';
 
 dotenv.config();
 
@@ -14,9 +14,10 @@ app.use(express.json());
 const BLOCK_MEDIA = (process.env.BLOCK_MEDIA || 'False').toUpperCase() === 'TRUE';
 const MAX_CONCURRENT_PAGES = Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? '10', 10) || 10);
 
-const PROXY_SERVER = process.env.PROXY_SERVER || null;
-const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
+const PROXY_SERVER = process.env.PROXY_SERVER;
+const PROXY_USERNAME = process.env.PROXY_USERNAME;
+const PROXY_PASSWORD = process.env.PROXY_PASSWORD;
+
 class Semaphore {
   private permits: number;
   private queue: (() => void)[] = [];
@@ -73,6 +74,8 @@ const AD_SERVING_DOMAINS = [
   'amazon-adsystem.com'
 ];
 
+const STEALTH_ENABLED = (process.env.STEALTH_ENABLED || 'True').toUpperCase() === 'TRUE';
+
 interface UrlModel {
   url: string;
   wait_after_load?: number;
@@ -87,41 +90,37 @@ let browser: Browser;
 const initializeBrowser = async () => {
   browser = await chromium.launch({
     headless: true,
-    args: [
+    args: STEALTH_ENABLED ? getStealthLaunchArgs() : [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--disable-gpu'
-    ]
+      '--disable-gpu',
+    ],
   });
 };
 
 const createContext = async (skipTlsVerification: boolean = false) => {
-  const userAgent = new UserAgent().toString();
-  const viewport = { width: 1280, height: 800 };
-
   const contextOptions: any = {
-    userAgent,
-    viewport,
     ignoreHTTPSErrors: skipTlsVerification,
   };
 
-  if (PROXY_SERVER && PROXY_USERNAME && PROXY_PASSWORD) {
+  if (PROXY_SERVER) {
     contextOptions.proxy = {
       server: PROXY_SERVER,
-      username: PROXY_USERNAME,
-      password: PROXY_PASSWORD,
-    };
-  } else if (PROXY_SERVER) {
-    contextOptions.proxy = {
-      server: PROXY_SERVER,
+      ...(PROXY_USERNAME && { username: PROXY_USERNAME }),
+      ...(PROXY_PASSWORD && { password: PROXY_PASSWORD }),
     };
   }
 
   const newContext = await browser.newContext(contextOptions);
+
+  // Apply stealth evasion scripts to the context
+  if (STEALTH_ENABLED) {
+    await applyStealthScripts(newContext);
+  }
 
   if (BLOCK_MEDIA) {
     await newContext.route('**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}', async (route: Route, request: PlaywrightRequest) => {
@@ -140,7 +139,7 @@ const createContext = async (skipTlsVerification: boolean = false) => {
     }
     return route.continue();
   });
-  
+
   return newContext;
 };
 
@@ -161,7 +160,7 @@ const isValidUrl = (urlString: string): boolean => {
 
 const scrapePage = async (page: Page, url: string, waitUntil: 'load' | 'networkidle', waitAfterLoad: number, timeout: number, checkSelector: string | undefined) => {
   console.log(`Navigating to ${url} with waitUntil: ${waitUntil} and timeout: ${timeout}ms`);
-  const response = await page.goto(url, { waitUntil, timeout });
+  let response = await page.goto(url, { waitUntil, timeout });
 
   if (waitAfterLoad > 0) {
     await page.waitForTimeout(waitAfterLoad);
@@ -198,21 +197,21 @@ app.get('/health', async (req: Request, res: Response) => {
     if (!browser) {
       await initializeBrowser();
     }
-    
+
     const testContext = await createContext();
     const testPage = await testContext.newPage();
     await testPage.close();
     await testContext.close();
-    
-    res.status(200).json({ 
+
+    res.status(200).json({
       status: 'healthy',
       maxConcurrentPages: MAX_CONCURRENT_PAGES,
-      activePages: MAX_CONCURRENT_PAGES - pageSemaphore.getAvailablePermits()
+      activePages: MAX_CONCURRENT_PAGES - pageSemaphore.getAvailablePermits(),
     });
   } catch (error) {
     console.error('Health check failed:', error);
-    res.status(503).json({ 
-      status: 'unhealthy', 
+    res.status(503).json({
+      status: 'unhealthy',
       error: error instanceof Error ? error.message : 'Unknown error occurred'
     });
   }
@@ -238,18 +237,14 @@ app.post('/scrape', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid URL' });
   }
 
-  if (!PROXY_SERVER) {
-    console.warn('⚠️ WARNING: No proxy server provided. Your IP address may be blocked.');
-  }
-
   if (!browser) {
     await initializeBrowser();
   }
 
   await pageSemaphore.acquire();
-  
-  let requestContext: BrowserContext | null = null;
+
   let page: Page | null = null;
+  let requestContext: BrowserContext | null = null;
 
   try {
     requestContext = await createContext(skip_tls_verification);
@@ -263,9 +258,9 @@ app.post('/scrape', async (req: Request, res: Response) => {
     const pageError = result.status !== 200 ? getError(result.status) : undefined;
 
     if (!pageError) {
-      console.log(`✅ Scrape successful!`);
+      console.log(`Scrape successful!`);
     } else {
-      console.log(`🚨 Scrape failed with status code: ${result.status} ${pageError}`);
+      console.log(`Scrape failed with status code: ${result.status} ${pageError}`);
     }
 
     res.json({
@@ -274,7 +269,6 @@ app.post('/scrape', async (req: Request, res: Response) => {
       contentType: result.contentType,
       ...(pageError && { pageError })
     });
-
   } catch (error) {
     console.error('Scrape error:', error);
     res.status(500).json({ error: 'An error occurred while fetching the page.' });

@@ -12,13 +12,13 @@ import {
   getBillingQueue,
   getPrecrawlQueue,
 } from "./services/queue-service";
-import { v0Router } from "./routes/v0";
+// import { v0Router } from "./routes/v0";
 import os from "os";
 import { logger } from "./lib/logger";
 import { adminRouter } from "./routes/admin";
 import http from "node:http";
 import https from "node:https";
-import { v1Router } from "./routes/v1";
+// import { v1Router } from "./routes/v1";
 import expressWs from "express-ws";
 import {
   ErrorResponse,
@@ -100,9 +100,7 @@ app.get("/e2e-test", (_, res) => {
   res.status(200).send("OK");
 });
 
-// register router
-app.use(v0Router);
-app.use("/v1", v1Router);
+// register router — v2 only
 app.use("/v2", v2Router);
 app.use(adminRouter);
 

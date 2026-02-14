@@ -43,7 +43,6 @@ const useFireEngine =
 const usePlaywright =
   config.PLAYWRIGHT_MICROSERVICE_URL !== "" &&
   config.PLAYWRIGHT_MICROSERVICE_URL !== undefined;
-
 const engines: Engine[] = [
   ...(useIndex ? ["index" as const, "index;documents" as const] : []),
   ...(useFireEngine

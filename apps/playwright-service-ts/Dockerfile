@@ -6,10 +6,10 @@ RUN npm install
 
 COPY . .
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/playwright
+ENV PATCHRIGHT_BROWSERS_PATH=/usr/local/share/patchright
 
 # Install Playwright dependencies
-RUN npx playwright install chromium --with-deps
+RUN npx patchright install chromium --with-deps
 
 RUN npm run build
 
