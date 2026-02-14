@@ -51,7 +51,7 @@ x-common-env: &common-env
   PROXY_SERVER: ${PROXY_SERVER}
   PROXY_USERNAME: ${PROXY_USERNAME}
   PROXY_PASSWORD: ${PROXY_PASSWORD}
-  SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
+  SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT:-http://searxng:8080}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
 
@@ -101,6 +101,10 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      nuq-postgres:
+        condition: service_started
+      searxng:
+        condition: service_started
     ports:
       - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
     command: node dist/src/harness.js --start-docker
@@ -158,6 +162,22 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+        compress: "true"
+
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ./apps/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - backend
+    cpus: 1.0
+    mem_limit: 1G
+    memswap_limit: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
         compress: "true"
 
 networks:

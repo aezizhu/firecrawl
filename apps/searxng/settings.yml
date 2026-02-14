@@ -1,0 +1,151 @@
+use_default_settings: true
+
+general:
+  instance_name: "Firecrawl SearXNG"
+  debug: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "firecrawl-searxng-secret-change-me"
+  limiter: false
+  image_proxy: false
+
+ui:
+  static_use_hash: true
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  pool_connections: 100
+  pool_maxsize: 20
+
+engines:
+  # --- Web Search Engines (distributed across multiple providers) ---
+
+  # Google - primary web search
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+    timeout: 6.0
+    weight: 1.2
+
+  # Bing - secondary web search
+  - name: bing
+    engine: bing
+    shortcut: b
+    disabled: false
+    timeout: 6.0
+    weight: 1.0
+
+  # DuckDuckGo - tertiary web search
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+    timeout: 6.0
+    weight: 0.8
+
+  # Brave Search - additional diversity
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+    timeout: 6.0
+    weight: 0.8
+
+  # Qwant - European search engine, good diversity
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    disabled: false
+    timeout: 6.0
+    weight: 0.6
+
+  # Mojeek - independent index, no tracking
+  - name: mojeek
+    engine: mojeek
+    shortcut: mj
+    disabled: false
+    timeout: 6.0
+    weight: 0.5
+
+  # --- News Engines ---
+
+  - name: google news
+    engine: google_news
+    shortcut: gn
+    disabled: false
+    timeout: 6.0
+    categories: news
+
+  - name: bing news
+    engine: bing_news
+    shortcut: bn
+    disabled: false
+    timeout: 6.0
+    categories: news
+
+  - name: duckduckgo news
+    shortcut: ddn
+    engine: duckduckgo_extra
+    type: news
+    disabled: false
+    timeout: 6.0
+    categories: news
+
+  # --- Image Engines ---
+
+  - name: google images
+    engine: google_images
+    shortcut: gi
+    disabled: false
+    timeout: 6.0
+    categories: images
+
+  - name: bing images
+    engine: bing_images
+    shortcut: bi
+    disabled: false
+    timeout: 6.0
+    categories: images
+
+  - name: duckduckgo images
+    shortcut: ddi
+    engine: duckduckgo_extra
+    type: images
+    disabled: false
+    timeout: 6.0
+    categories: images
+
+  # --- IT / Developer ---
+
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+    categories: it
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+    disabled: false
+    categories: it
+
+  # --- Science / Academic ---
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+    categories: general
+    weight: 0.7
